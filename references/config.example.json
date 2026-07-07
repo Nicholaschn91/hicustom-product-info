@@ -1,0 +1,12 @@
+{
+    "default_zip": "33101",
+    "default_browser": "chromium",
+    "default_timeout": 30,
+    "session_dir": "~/.hicustom_session",
+    "feishu": {
+        "app_id": "YOUR_FEISHU_APP_ID",
+        "app_secret": "YOUR_FEISHU_APP_SECRET",
+        "base_token": "YOUR_BASE_TOKEN",
+        "table_id": "YOUR_TABLE_ID"
+    }
+}
