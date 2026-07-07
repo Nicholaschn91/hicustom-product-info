@@ -77,26 +77,49 @@ class FeishuClient:
         )
         return r.json()
 
-    def upsert_record(self, fields: dict, search_field: str = "商品ID") -> dict:
-        """按 search_field 查找已有记录，有则更新、无则创建"""
-        search_val = fields.get(search_field, "")
-        if not search_val:
+    def upsert_record(self, fields: dict) -> dict:
+        """按 商品ID + 设计方案 查找已有记录，有则更新、无则创建。
+        
+        同一商品可以有多个设计方案（如钓鱼款、伴郎款），每条独立记录。
+        无设计方案时仅按商品ID匹配（兼容旧数据和批量采集）。
+        """
+        product_id = fields.get("商品ID", "")
+        design = fields.get("设计方案", "")
+        
+        if not product_id:
             return self.create_record(fields)
         
-        # 搜索已存在记录
-        encoded = search_val.replace('"', '\\"')
-        r = requests.get(
+        # 构造过滤器：商品ID 必选，设计方案可选
+        encoded_pid = product_id.replace('"', '\\"')
+        url = (
             f"{FEISHU_API}/bitable/v1/apps/{FEISHU['base_token']}"
             f"/tables/{FEISHU['table_id']}/records"
-            f"?filter=CurrentValue.[{search_field}]=%22{encoded}%22",
-            headers=self.headers,
+            f"?filter=CurrentValue.[商品ID]=%22{encoded_pid}%22"
+            f"&page_size=50"
         )
+        r = requests.get(url, headers=self.headers)
         data = r.json()
         items = data.get("data", {}).get("items", [])
         
-        if items:
-            # 更新已有记录
-            record_id = items[0]["record_id"]
+        # 在已有记录中匹配设计方案
+        matched = None
+        if design:
+            for item in items:
+                if item.get("fields", {}).get("设计方案") == design:
+                    matched = item
+                    break
+        else:
+            # 无设计方案时，优先匹配也没有设计方案的旧记录
+            for item in items:
+                if not item.get("fields", {}).get("设计方案"):
+                    matched = item
+                    break
+            # 如果所有记录都有设计方案，创建新的
+            if not matched and items:
+                matched = None
+        
+        if matched:
+            record_id = matched["record_id"]
             r = requests.put(
                 f"{FEISHU_API}/bitable/v1/apps/{FEISHU['base_token']}"
                 f"/tables/{FEISHU['table_id']}/records/{record_id}",
@@ -108,7 +131,6 @@ class FeishuClient:
                 return {"code": 0, "data": {"record": {"record_id": record_id}}, "action": "updated"}
             return resp
         else:
-            # 创建新记录
             resp = self.create_record(fields)
             if resp.get("code") == 0:
                 resp["action"] = "created"
@@ -204,10 +226,14 @@ def _infer_category(product_name: str, product_details: str) -> str:
     return ""
 
 
-def map_fields(info: ProductInfo) -> dict:
+def map_fields(info: ProductInfo, design: str = "") -> dict:
     """将 ProductInfo 映射为飞书表格字段"""
     raw = extract_raw_api_fields(info)
     fields = {}
+
+    # 设计方案（横向扩展：同一商品可有多条记录，按设计方案区分）
+    if design:
+        fields["设计方案"] = design
 
     # 商品名称
     if info.product_name:
@@ -386,6 +412,7 @@ def sync(
     timeout: int = 60,
     debug: bool = False,
     interactive_freight: bool = True,
+    design: str = "",
 ) -> dict:
     """
     一键提取 + 同步
@@ -441,7 +468,7 @@ def sync(
 
     # ═══ Step 2: 映射字段 ═══
     print("🔄 [2/3] 映射字段...")
-    fields = map_fields(info)
+    fields = map_fields(info, design)
 
     # ═══ Step 3: 上传图片 & 写飞书 ═══
     print("📝 [3/3] 写入飞书...")
@@ -488,6 +515,7 @@ def main():
     parser.add_argument("--no-interactive-freight", action="store_false",
                         dest="interactive_freight", default=True,
                         help="关闭交互式运费试算，使用API拦截模式（默认：开启交互式试算）")
+    parser.add_argument("--design", default="", help="设计方案（如：钓鱼款、伴郎款），同一商品可有多条设计方案")
 
     args = parser.parse_args()
 
@@ -507,6 +535,7 @@ def main():
         timeout=args.timeout,
         debug=args.debug,
         interactive_freight=args.interactive_freight,
+        design=args.design,
     )
 
     if args.output == "json":
