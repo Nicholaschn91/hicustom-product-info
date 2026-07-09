@@ -57,9 +57,17 @@ def get_existing_product_ids() -> set:
             )
             data = r.json().get("data", {})
             for rec in data.get("items", []):
-                pid = rec.get("fields", {}).get("商品ID", "")
+                fields = rec.get("fields", {})
+                pid = fields.get("商品ID", "")
                 if pid:
                     existing.add(str(pid))
+                # 也收集「同款商品ID」中的商品ID
+                tongkuan = fields.get("同款商品ID", "")
+                if tongkuan:
+                    for tk in str(tongkuan).split(","):
+                        tk = tk.strip()
+                        if tk:
+                            existing.add(tk)
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token")
@@ -246,6 +254,20 @@ def main():
 
     print(f"\n{'='*50}")
     print(f"✅ {ok} | ❌ {fail} | ⏭️  {skip} (已存在)")
+    
+    # ── 自检核验：比对分类页商品数 vs 飞书实际覆盖数 ──
+    print("\n🔍 自检...")
+    cat_product_ids = {str(it["id"]) for it in items}
+    feishu_all = get_existing_product_ids()  # 含主ID + 同款ID
+    covered = cat_product_ids & feishu_all
+    missing = cat_product_ids - feishu_all
+    print(f"   分类页: {len(cat_product_ids)} 件")
+    print(f"   飞书覆盖: {len(covered)}/{len(cat_product_ids)}")
+    if missing:
+        preview = ", ".join(list(missing)[:5])
+        print(f"   ⚠️ 遗漏 {len(missing)}: {preview}{'...' if len(missing)>5 else ''}")
+    else:
+        print(f"   ✅ 全覆盖")
     print(f"📊 {TABLE_URL}")
 
 
