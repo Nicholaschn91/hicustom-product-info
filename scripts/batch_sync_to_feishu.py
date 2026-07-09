@@ -212,10 +212,6 @@ def main():
         define_id = item.get("define_id", "")
         name = item.get("name", "?")
 
-        if str(spu_id) in existing_ids:
-            print(f"[{i+1}/{len(items)}] {name} ...", end=" ", flush=True)
-            # 已存在也重新跑（sync_to_feishu 会用 upsert 更新运费）
-
         detail_url = (
             f"https://jit.hicustom.com/merchant/fnsz-sale/productDetail"
             f"?id={spu_id}&isFenxiaoMerchant=-1&rel_app_id=2483999"
@@ -223,32 +219,39 @@ def main():
         )
         print(f"[{i+1}/{len(items)}] {name} ...", end=" ", flush=True)
 
-        cmd = [PYTHON, str(SYNC_SCRIPT), detail_url, "--zip", args.zip]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
-                                cwd=str(SCRIPTS_DIR))
-
-        output = result.stdout + result.stderr
-        if "同步成功" in output:
-            ok += 1
-            # 提取关键信息
+        # JSON 模式 — 解析 ok 字段判断成败，最多重试 1 次
+        success = False
+        for attempt in range(2):
+            cmd = [PYTHON, str(SYNC_SCRIPT), detail_url, "--zip", args.zip, "--output", "json"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                                    cwd=str(SCRIPTS_DIR))
+            output = result.stdout + result.stderr
+            # 从输出中找到 JSON 行并解析
             for line in output.split("\n"):
                 line = line.strip()
-                if "记录:" in line:
-                    print(f"✅ {line.split(':')[1].strip()}")
-                elif "价格:" in line:
-                    price = line.split(":")[1].strip()
-                elif "运费:" in line:
-                    ship = line.split(":")[1].strip()
-            # 也打印价格运费
-            for line in output.split("\n"):
-                if "价格:" in line:
-                    print(f"   {line.strip()}")
-                elif "运费:" in line:
-                    print(f"   {line.strip()}")
-        else:
+                if line.startswith("{") and '"ok"' in line:
+                    try:
+                        data = json.loads(line)
+                        if data.get("ok"):
+                            success = True
+                            p = data.get("product", {})
+                            print(f"✅ {p.get('name','')[:25]} | ¥{p.get('price','')} | 运费¥{p.get('shipping','')}")
+                        else:
+                            err = data.get("error", "?")
+                            if attempt == 0:
+                                print(f"⚠️ 重试({err[:30]})", end=" ", flush=True)
+                            else:
+                                print(f"❌ {err[:60]}")
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            if success:
+                ok += 1
+                break
+            time.sleep(3)
+
+        if not success:
             fail += 1
-            err = "?".join([l for l in output.split("\n") if "错误" in l][:1]) or "?"
-            print(f"❌ {err[:80]}")
 
         time.sleep(2)  # 间隔，避免浏览器资源冲突
 
