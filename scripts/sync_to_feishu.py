@@ -82,8 +82,11 @@ class FeishuClient:
         
         同一商品可以有多个设计方案（如钓鱼款、伴郎款），每条独立记录。
         无设计方案时仅按商品ID匹配（兼容旧数据和批量采集）。
+
+        白品ID 去重：同白品不同商品ID → 追加到「同款商品ID」字段，不建新记录。
         """
         product_id = fields.get("商品ID", "")
+        blank_code = fields.get("白品ID", "")
         design = fields.get("设计方案", "")
         
         if not product_id:
@@ -130,11 +133,42 @@ class FeishuClient:
             if resp.get("code") == 0:
                 return {"code": 0, "data": {"record": {"record_id": record_id}}, "action": "updated"}
             return resp
-        else:
-            resp = self.create_record(fields)
-            if resp.get("code") == 0:
-                resp["action"] = "created"
-            return resp  
+        
+        # ── 商品ID 未命中 → 按白品ID查找同款 ──
+        if blank_code:
+            bc_url = (
+                f"{FEISHU_API}/bitable/v1/apps/{FEISHU['base_token']}"
+                f"/tables/{FEISHU['table_id']}/records"
+                f"?filter=CurrentValue.[白品ID]=%22{blank_code}%22"
+                f"&page_size=10"
+            )
+            bc_r = requests.get(bc_url, headers=self.headers)
+            bc_data = bc_r.json()
+            bc_items = bc_data.get("data", {}).get("items", [])
+            if bc_items:
+                # 同款已存在 → 追加当前商品ID到「同款商品ID」
+                sibling = bc_items[0]
+                sib_rid = sibling["record_id"]
+                existing_tongkuan = sibling.get("fields", {}).get("同款商品ID", "")
+                current_ids = [x.strip() for x in existing_tongkuan.split(",") if x.strip()] if existing_tongkuan else []
+                if product_id not in current_ids:
+                    current_ids.append(product_id)
+                    new_tongkuan = ", ".join(current_ids)
+                    r = requests.put(
+                        f"{FEISHU_API}/bitable/v1/apps/{FEISHU['base_token']}"
+                        f"/tables/{FEISHU['table_id']}/records/{sib_rid}",
+                        headers=self.headers,
+                        json={"fields": {"同款商品ID": new_tongkuan}},
+                    )
+                    print(f"   🔗 同款白品 {blank_code[:8]} → 追加商品ID到 {sib_rid}")
+                    r.json()  # consume
+                return {"code": 0, "data": {"record": {"record_id": sib_rid}}, "action": "appended"}
+        
+        # ── 完全无匹配 → 新建 ──
+        resp = self.create_record(fields)
+        if resp.get("code") == 0:
+            resp["action"] = "created"
+        return resp  
 
     def upload_image(self, filepath: str, filename: str) -> str:
         """上传图片到飞书驱动，返回 file_token"""
@@ -160,7 +194,7 @@ class FeishuClient:
 # ── 字段映射 ──────────────────────────────────────────
 
 def extract_raw_api_fields(info: ProductInfo) -> dict:
-    """从 api_data 中提取工厂/品类/出货周期等原始字段"""
+    """从 api_data 中提取工厂/品类/出货周期/白品ID等原始字段"""
     raw = {}
     api = info.api_data or {}
 
@@ -171,6 +205,10 @@ def extract_raw_api_fields(info: ProductInfo) -> dict:
     category = api.get("category", "")
     if category:
         raw["category"] = category
+
+    blank_code = api.get("blank_code", "")
+    if blank_code:
+        raw["blank_code"] = blank_code
 
     delivery = api.get("delivery_period_hours")
     if delivery:
@@ -242,6 +280,11 @@ def map_fields(info: ProductInfo, design: str = "") -> dict:
     # 商品 ID
     if info.product_id:
         fields["商品ID"] = info.product_id
+
+    # 白品 ID（同款去重依据：不同商品 ID 但相同白品 ID → 同款）
+    blank_code = raw.get("blank_code", "")
+    if blank_code:
+        fields["白品ID"] = blank_code
 
     # 单价 — 去除 ¥，保留数字
     price_str = info.unit_price.replace("¥", "").replace("$", "").strip()
