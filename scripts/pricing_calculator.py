@@ -5,6 +5,9 @@
 根据人民币成本（单价+运费）和实时汇率，倒推计算符合平台佣金、
 目标利润率及心理定价规则（尾数 .49/.99）的最终美元售价。
 
+汇率获取与 currency-api skill 统一口径，使用 fawazahmed0/currency-api，
+零外部依赖（urllib 替代 requests）。
+
 集成方式:
   from pricing_calculator import PricingEngine
   engine = PricingEngine()
@@ -14,6 +17,7 @@
 
 import math
 import json
+import urllib.request
 from typing import Optional
 from dataclasses import dataclass, asdict
 
@@ -46,19 +50,14 @@ class PricingEngine:
         return self._exchange_rate
 
     def _fetch_exchange_rate(self) -> float:
-        """从免费汇率 API 获取实时 CNY/USD 汇率"""
-        import requests
+        """从 fawazahmed0/currency-api 获取 USD/CNY 汇率（与 currency-api skill 统一）"""
+        url = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"
         try:
-            r = requests.get(
-                "https://cdn.jsdelivr.net/npm/@fawazahmed0/"
-                "currency-api@latest/v1/currencies/usd.json",
-                timeout=10,
-            )
-            data = r.json()
-            return float(data["usd"]["cny"])
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                return float(data["usd"]["cny"])
         except Exception:
-            # 兜底: 使用常见汇率
-            return 7.25
+            return 7.25  # 兜底
 
     def calculate(
         self,
