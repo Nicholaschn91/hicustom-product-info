@@ -263,7 +263,7 @@ def map_fields(info: ProductInfo, design: str = "") -> dict:
     weight_str = info.weight.replace("g", "").replace("kg", "").strip()
     try:
         weight = float(weight_str)
-        fields["重量"] = weight
+        fields["重量(g)"] = weight
     except (ValueError, TypeError):
         pass
 
