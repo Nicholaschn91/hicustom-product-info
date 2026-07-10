@@ -102,7 +102,6 @@ def get_product_ids(category_url: str) -> list[dict]:
         browser.close()
     if not real_body: return []
     real_body["page"], real_body["page_size"] = 1, 20
-    from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         b2 = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         ctx = b2.new_context(storage_state=str(session_file))
