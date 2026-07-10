@@ -77,110 +77,52 @@ def get_existing_product_ids() -> set:
 
 
 def get_product_ids(category_url: str) -> list[dict]:
-    parsed = urlparse(category_url)
-    qs = parse_qs(parsed.query)
-    recommend_id = qs.get("recommend_id", [None])[0]
-    
-    # 尝试从 params JSON 中提取 category_ids
-    category_ids = None
-    params_raw = qs.get("params", [""])[0]
-    if params_raw:
-        try:
-            params_dict = json.loads(params_raw)
-            cat_ids = params_dict.get("q_selectedCategoryId", [])
-            if cat_ids:
-                category_ids = cat_ids
-        except json.JSONDecodeError:
-            pass
-    
-    if not recommend_id and not category_ids:
-        return []
-
+    """拦截页面真实 API 请求，拿到的请求体翻页拉取全量商品"""
     session_file = Path.home() / ".hicustom_session" / "state.json"
     if not session_file.exists():
         return []
-
-    # 用副本，避免污染原session
     import shutil, tempfile
     tmp_session = Path(tempfile.gettempdir()) / "hicustom_batch_session.json"
     shutil.copy2(session_file, tmp_session)
-    
     list_data = []
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(storage_state=str(tmp_session), viewport={"width": 1920, "height": 1080})
         page = context.new_page()
-
-        # 只打开页面获取 cookies，不依赖 interceptor
-        try:
-            page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            pass
+        real_body = None
+        def on_req(req):
+            nonlocal real_body
+            if "spus/page" in req.url and req.method == "POST" and real_body is None:
+                try: real_body = json.loads(req.post_data or "{}")
+                except: pass
+        page.on("request", on_req)
+        try: page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
+        except: pass
         page.wait_for_timeout(5000)
-
-        # 所有页面统一用 page.evaluate 调 API，避免 interceptor 重复捕获
-        result = page.evaluate("""
-            async (p) => {
-                const r = await fetch(p.url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p.body)});
-                return await r.json();
-            }
-        """, {
-            "url": f"{APIGW}/spu-itg/uct/v1/spus/page",
-            "body": {"page": 1, "page_size": 20, "is_filter_reference": 1,
-                     "accept_supply": True, "accept_all_group_sort_center": True,
-                     "recommend_id": recommend_id or "", "accept_factory_app": True,
-                     "category_ids": category_ids or [],
-                     "label_intersect": True, "price_filters": [], "weight_filters": [],
-                     "delivery_period_filters": [], "platform_label_ids": [], "label_ids": [],
-                     "urgent_period_filters": [], "sort_center_app_ids": [],
-                     "name_filter_type": "1", "types": ["1"],
-                     "sort": [{"sort_by": "position", "sort_type": 2},
-                              {"sort_by": "sale_time", "sort_type": 2}],
-                     "sort_type": 1, "currency_id": 1, "app_id": 2483999,
-                     "is_filter_group": True, "accept_multi_currency": True,
-                     "accept_currency_support": True},
-        })
-        d = result.get("data", {})
-        if d.get("list"):
-            list_data.append(d)
-            total = d.get("total", 0)
-            page_size = d.get("page_size", 20)
-            total_pages = (total + page_size - 1) // page_size
-            print(f"📊 {total} 件, {total_pages} 页")
-
-            for pg in range(2, total_pages + 1):
-                result = page.evaluate("""
-                    async (p) => {
-                        const r = await fetch(p.url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p.body)});
-                        return await r.json();
-                    }
-                """, {
-                    "url": f"{APIGW}/spu-itg/uct/v1/spus/page",
-                    "body": {"page": pg, "page_size": page_size, "is_filter_reference": 1,
-                             "accept_supply": True, "accept_all_group_sort_center": True,
-                             "recommend_id": recommend_id or "", "accept_factory_app": True,
-                             "category_ids": category_ids or [],
-                             "label_intersect": True, "price_filters": [], "weight_filters": [],
-                             "delivery_period_filters": [], "platform_label_ids": [], "label_ids": [],
-                             "urgent_period_filters": [], "sort_center_app_ids": [],
-                             "name_filter_type": "1", "types": ["1"],
-                             "sort": [{"sort_by": "position", "sort_type": 2},
-                                      {"sort_by": "sale_time", "sort_type": 2}],
-                             "sort_type": 1, "currency_id": 1, "app_id": 2483999,
-                             "is_filter_group": True, "accept_multi_currency": True,
-                             "accept_currency_support": True},
-                })
-                if result.get("data", {}).get("list"):
-                    list_data.append(result["data"])
-                time.sleep(0.3)
-
         browser.close()
-
+    if not real_body: return []
+    real_body["page"], real_body["page_size"] = 1, 20
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        b2 = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        ctx = b2.new_context(storage_state=str(session_file))
+        pg = ctx.new_page()
+        try: pg.goto(category_url, wait_until="domcontentloaded", timeout=30000)
+        except: pass
+        pg.wait_for_timeout(3000)
+        r = pg.evaluate("""async (b) => { const res = await fetch('https://apigw.hihumbird.com/spu-itg/uct/v1/spus/page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); return await res.json(); }""", real_body)
+        d = r.get("data",{})
+        if d.get("list"): list_data.append(d)
+        total = d.get("total", 0)
+        print(f"📊 {total} 件, {(total+19)//20} 页")
+        for pg_num in range(2, (total+19)//20+1):
+            real_body["page"] = pg_num
+            r = pg.evaluate("""async (b) => { const res = await fetch('https://apigw.hihumbird.com/spu-itg/uct/v1/spus/page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); return await res.json(); }""", real_body)
+            if r.get("data",{}).get("list"): list_data.append(r["data"])
+        b2.close()
     items = []
-    for ld in list_data:
-        items.extend(ld.get("list", []))
-
+    for ld in list_data: items.extend(ld.get("list", []))
+    return items
     # 筛选：只保留中国(CN)和美国(US)发货的商品
     filtered = []
     skipped = 0
