@@ -126,12 +126,6 @@ def get_product_ids(category_url: str) -> list[dict]:
     items = []
     for ld in list_data: items.extend(ld.get("list", []))
     return items
-        print(f"📊 {total} 件, {(total+19)//20} 页")
-        for pg_num in range(2, (total+19)//20+1):
-            real_body["page"] = pg_num
-            r = pg.evaluate("""async (b) => { const res = await fetch('https://apigw.hihumbird.com/spu-itg/uct/v1/spus/page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); return await res.json(); }""", real_body)
-            if r.get("data",{}).get("list"): list_data.append(r["data"])
-        b2.close()
     items = []
     for ld in list_data: items.extend(ld.get("list", []))
     return items
