@@ -77,7 +77,7 @@ def get_existing_product_ids() -> set:
 
 
 def get_product_ids(category_url: str) -> list[dict]:
-    """拦截页面真实 API 请求，拿到的请求体翻页拉取全量商品"""
+    """用 page.route 拦截页面真实 API 请求体，再用 evaluate 重放翻页拉取全量商品"""
     session_file = Path.home() / ".hicustom_session" / "state.json"
     if not session_file.exists():
         return []
@@ -85,34 +85,25 @@ def get_product_ids(category_url: str) -> list[dict]:
     tmp_session = Path(tempfile.gettempdir()) / "hicustom_batch_session.json"
     shutil.copy2(session_file, tmp_session)
     list_data = []
+    cap_body = {"v": None}
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(storage_state=str(tmp_session), viewport={"width": 1920, "height": 1080})
         page = context.new_page()
-        # add_init_script 注入到所有 frame（包括 wujie iframe），在页面加载前生效
-        page.add_init_script("""
-            window.__spus_body = null;
-            const _origFetch = window.fetch;
-            window.fetch = function(...args) {
-                const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url || '');
-                if (url.includes('spus/page') && args[1] && args[1].body) {
-                    window.__spus_body = args[1].body;
-                }
-                return _origFetch.apply(this, args);
-            };
-        """)
-        real_body = None
-        try: page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
+        def on_route(route):
+            if cap_body["v"] is None:
+                u = route.request.url
+                if ("spus" in u or "spu-itg" in u) and route.request.method == "POST":
+                    try:
+                        cap_body["v"] = json.loads(route.request.post_data or "{}")
+                    except: pass
+            route.continue_()
+        page.route("**/*", on_route)
+        try: page.goto(category_url, wait_until="load", timeout=60000)
         except: pass
-        # 等待 wujie iframe 加载并触发 API 调用
-        for _ in range(15):
-            page.wait_for_timeout(2000)
-            real_body = page.evaluate("() => window.__spus_body")
-            if real_body:
-                try: real_body = json.loads(real_body)
-                except: pass
-                break
+        page.wait_for_timeout(10000)
         browser.close()
+    real_body = cap_body["v"]
     if not real_body: return []
     real_body["page"], real_body["page_size"] = 1, 20
     with sync_playwright() as p:
@@ -126,6 +117,15 @@ def get_product_ids(category_url: str) -> list[dict]:
         d = r.get("data",{})
         if d.get("list"): list_data.append(d)
         total = d.get("total", 0)
+        print(f"📊 {total} 件, {(total+19)//20} 页")
+        for pg_num in range(2, (total+19)//20+1):
+            real_body["page"] = pg_num
+            r = pg.evaluate("""async (b) => { const res = await fetch('https://apigw.hihumbird.com/spu-itg/uct/v1/spus/page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); return await res.json(); }""", real_body)
+            if r.get("data",{}).get("list"): list_data.append(r["data"])
+        b2.close()
+    items = []
+    for ld in list_data: items.extend(ld.get("list", []))
+    return items
         print(f"📊 {total} 件, {(total+19)//20} 页")
         for pg_num in range(2, (total+19)//20+1):
             real_body["page"] = pg_num
