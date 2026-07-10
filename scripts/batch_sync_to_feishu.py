@@ -80,7 +80,20 @@ def get_product_ids(category_url: str) -> list[dict]:
     parsed = urlparse(category_url)
     qs = parse_qs(parsed.query)
     recommend_id = qs.get("recommend_id", [None])[0]
-    if not recommend_id:
+    
+    # 尝试从 params JSON 中提取 category_ids
+    category_ids = None
+    params_raw = qs.get("params", [""])[0]
+    if params_raw:
+        try:
+            params_dict = json.loads(params_raw)
+            cat_ids = params_dict.get("q_selectedCategoryId", [])
+            if cat_ids:
+                category_ids = cat_ids
+        except json.JSONDecodeError:
+            pass
+    
+    if not recommend_id and not category_ids:
         return []
 
     session_file = Path.home() / ".hicustom_session" / "state.json"
@@ -116,7 +129,8 @@ def get_product_ids(category_url: str) -> list[dict]:
             "url": f"{APIGW}/spu-itg/uct/v1/spus/page",
             "body": {"page": 1, "page_size": 20, "is_filter_reference": 1,
                      "accept_supply": True, "accept_all_group_sort_center": True,
-                     "recommend_id": recommend_id, "accept_factory_app": True,
+                     "recommend_id": recommend_id or "", "accept_factory_app": True,
+                     "category_ids": category_ids or [],
                      "label_intersect": True, "price_filters": [], "weight_filters": [],
                      "delivery_period_filters": [], "platform_label_ids": [], "label_ids": [],
                      "urgent_period_filters": [], "sort_center_app_ids": [],
@@ -145,7 +159,8 @@ def get_product_ids(category_url: str) -> list[dict]:
                     "url": f"{APIGW}/spu-itg/uct/v1/spus/page",
                     "body": {"page": pg, "page_size": page_size, "is_filter_reference": 1,
                              "accept_supply": True, "accept_all_group_sort_center": True,
-                             "recommend_id": recommend_id, "accept_factory_app": True,
+                             "recommend_id": recommend_id or "", "accept_factory_app": True,
+                             "category_ids": category_ids or [],
                              "label_intersect": True, "price_filters": [], "weight_filters": [],
                              "delivery_period_filters": [], "platform_label_ids": [], "label_ids": [],
                              "urgent_period_filters": [], "sort_center_app_ids": [],
