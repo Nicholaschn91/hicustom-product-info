@@ -219,39 +219,37 @@ def main():
         )
         print(f"[{i+1}/{len(items)}] {name} ...", end=" ", flush=True)
 
-        # JSON 模式 — 解析 ok 字段判断成败，最多重试 1 次
+        # 文本模式 + 失败重试 1 次
         success = False
+        last_err = ""
         for attempt in range(2):
-            cmd = [PYTHON, str(SYNC_SCRIPT), detail_url, "--zip", args.zip, "--output", "json"]
+            cmd = [PYTHON, str(SYNC_SCRIPT), detail_url, "--zip", args.zip]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
                                     cwd=str(SCRIPTS_DIR))
             output = result.stdout + result.stderr
-            # 从输出中找到 JSON 行并解析
-            for line in output.split("\n"):
-                line = line.strip()
-                if line.startswith("{") and '"ok"' in line:
-                    try:
-                        data = json.loads(line)
-                        if data.get("ok"):
-                            success = True
-                            p = data.get("product", {})
-                            print(f"✅ {p.get('name','')[:25]} | ¥{p.get('price','')} | 运费¥{p.get('shipping','')}")
-                        else:
-                            err = data.get("error", "?")
-                            if attempt == 0:
-                                print(f"⚠️ 重试({err[:30]})", end=" ", flush=True)
-                            else:
-                                print(f"❌ {err[:60]}")
+            if "同步成功" in output:
+                success = True
+                # 提取记录ID和运费摘要
+                for line in output.split("\n"):
+                    if "记录:" in line:
+                        print(f"✅ {line.split('记录:')[1].strip()}", end=" ")
+                    elif "运费:" in line:
+                        print(f"| {line.strip()}")
                         break
-                    except json.JSONDecodeError:
-                        continue
-            if success:
-                ok += 1
                 break
-            time.sleep(3)
+            else:
+                # 提取错误信息
+                errs = [l for l in output.split("\n") if "错误" in l]
+                last_err = errs[0][:60] if errs else "无输出"
+                if attempt == 0:
+                    print(f"⚠️ 重试", end=" ", flush=True)
+                time.sleep(3)
 
-        if not success:
+        if success:
+            ok += 1
+        else:
             fail += 1
+            print(f"❌ {last_err}")
 
         time.sleep(2)  # 间隔，避免浏览器资源冲突
 
