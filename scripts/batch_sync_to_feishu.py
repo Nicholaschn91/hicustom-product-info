@@ -96,7 +96,7 @@ def get_product_ids(category_url: str) -> list[dict]:
                 try: real_body = json.loads(req.post_data or "{}")
                 except: pass
         page.on("request", on_req)
-        try: page.goto(category_url, wait_until="networkidle", timeout=60000)
+        try: page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
         except: pass
         page.wait_for_timeout(5000)
         browser.close()
