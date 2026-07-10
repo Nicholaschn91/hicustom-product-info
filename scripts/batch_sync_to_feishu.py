@@ -89,16 +89,29 @@ def get_product_ids(category_url: str) -> list[dict]:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(storage_state=str(tmp_session), viewport={"width": 1920, "height": 1080})
         page = context.new_page()
+        # add_init_script 注入到所有 frame（包括 wujie iframe），在页面加载前生效
+        page.add_init_script("""
+            window.__spus_body = null;
+            const _origFetch = window.fetch;
+            window.fetch = function(...args) {
+                const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url || '');
+                if (url.includes('spus/page') && args[1] && args[1].body) {
+                    window.__spus_body = args[1].body;
+                }
+                return _origFetch.apply(this, args);
+            };
+        """)
         real_body = None
-        def on_req(req):
-            nonlocal real_body
-            if "spus/page" in req.url and req.method == "POST" and real_body is None:
-                try: real_body = json.loads(req.post_data or "{}")
-                except: pass
-        page.on("request", on_req)
         try: page.goto(category_url, wait_until="domcontentloaded", timeout=30000)
         except: pass
-        page.wait_for_timeout(5000)
+        # 等待 wujie iframe 加载并触发 API 调用
+        for _ in range(15):
+            page.wait_for_timeout(2000)
+            real_body = page.evaluate("() => window.__spus_body")
+            if real_body:
+                try: real_body = json.loads(real_body)
+                except: pass
+                break
         browser.close()
     if not real_body: return []
     real_body["page"], real_body["page_size"] = 1, 20
